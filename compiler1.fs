@@ -1,5 +1,6 @@
 ﻿open FParsec
 open System
+open System.Collections.Generic
 
 (*  Example
 
@@ -40,6 +41,49 @@ module AST =
         | Send of content:string 
         | Wait of Wait * Command 
         | Repeat of Repeation * Command
+
+    type Rule = Rule of Predicate * Command list
+
+module Evaluation =
+    open AST
+
+    let getVarContent (variables:IDictionary<string, string>) varName = variables.[varName]
+
+    let evaluateItem varContentGetter = function
+    | Content content -> content
+    | Variable var -> varContentGetter(var)
+
+    let rec evaluatePredicate itemEvaluator = function
+    | Equal(left, right) -> (itemEvaluator left) = (itemEvaluator right)
+    | Like(left, right) -> (itemEvaluator left) = (itemEvaluator right)
+    | Chain(first, last, op) ->
+        let firstRes = evaluatePredicate itemEvaluator first
+        let lastRes = evaluatePredicate itemEvaluator last
+
+        match op with
+        | And(false) -> firstRes && lastRes
+        | And(true) -> firstRes && (not lastRes)
+        | Or(false) -> firstRes || lastRes
+        | Or(true) -> firstRes || (not lastRes)
+
+    let evaluateCommand sender = function
+    | Send(content) -> sender(content)
+    | _ -> ()
+
+    let evaluateRule predicateEvaluator commandEvaluator (predicate, commands) =  
+        match predicateEvaluator predicate with
+        | true -> commands |> List.map commandEvaluator |> ignore; ()
+        | false -> ()
+
+    let evaluate variables =
+        let varContentGetter = getVarContent variables
+        let sender = fun content -> printfn "Sent: %s" content
+        let itemEvaluator = evaluateItem varContentGetter
+        let predicateEvaluator = evaluatePredicate itemEvaluator
+        let commandEvaluator = evaluateCommand sender
+        let ruleEvaluator = evaluateRule predicateEvaluator commandEvaluator
+
+        ruleEvaluator
 
 module Parser =
     open Utils
@@ -115,42 +159,40 @@ module Parser =
  
         whenStatement .>>. commandsSequence
 
-open Parser
+module Program =
+    open Parser
+    open Evaluation
 
-[<EntryPoint>]
-let main argv =
-    let itemParserTests = [
-        item, "'content item'";
-        item, "variableItem"
-    ]
+    [<EntryPoint>]
+    let main argv =
+        let instructionParserTests = [
+            instruction, "when message like 'hello'\nand user 'user1'\nthen send 'hi'\nand send 'heloooo user1'\nthen send 'how are you?'\n"
+        ]
+        
+        let test p str =
+            match run p str with
+            | Success(result, _, _)   -> printfn "Success: %A" result
+            | Failure(errorMsg, _, _) -> printfn "Failure: %s" errorMsg
 
-    let operatorsParserTests = [
-        operator, "or";
-        operator, "and";
-        operator, "or not";
-        operator, "and not"
-    ]
+        let variables = (new Dictionary<string, string>())
 
-    let predicateParserTests = [
-        predicate, "message 'hello'";
-        predicate, "message like 'hello'"
-    ]
+        let parseAndEvaluate p str =             
+            match run p str with
+            | Success(result, _, _)   -> evaluate variables result
+            | Failure(errorMsg, _, _) -> printfn "Fail to parse: %s" errorMsg
 
-    let commandParserTests = [
-        command, "send 'some message'"
-    ]
+        let testMany = List.map(fun (p, str) -> test p str)
+        let parseAndEvaluateMany = List.map(fun (p, str) -> parseAndEvaluate p str)
 
-    let instructionParserTests = [
-        instruction, "when message like 'hello'\nand user 'user1'\nthen send 'hi'\nand send 'heloooo user1'\nthen send 'how are you?'\n"
-    ]
-    
-    let test p str =
-        match run p str with
-        | Success(result, _, _)   -> printfn "Success: %A" result
-        | Failure(errorMsg, _, _) -> printfn "Failure: %s" errorMsg
+        printfn "********** Testing **********"
+        
+        testMany instructionParserTests |> ignore
 
-    let testMany = List.map(fun (p, str) -> test p str)
+        printfn "********** Evaluation **********"
 
-    testMany instructionParserTests |> ignore
+        variables.["message"] <- "hello"
+        variables.["user"] <- "user1"
 
-    0 // return an integer exit code
+        parseAndEvaluateMany instructionParserTests |> ignore
+
+        0 // return an integer exit code
