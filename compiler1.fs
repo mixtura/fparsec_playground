@@ -1,6 +1,19 @@
 ﻿open FParsec
 open System
 
+(*  Example
+
+    when message 'hello'
+    and author 'vasya'
+    then save
+    then send 'hi' 
+    and wait for 10 sec
+*)
+
+module Utils =
+    let apply2 f x y = f(x, y)
+    let applyTuple2 f (x, y) = f x y
+
 module AST =
     type Item = 
         | Variable of string 
@@ -26,12 +39,12 @@ module AST =
     type Command = 
         | Send of content:string 
         | Wait of Wait * Command 
-        | Repeat of Repeation * Command 
-        | Chain of first:Command * last:Command
+        | Repeat of Repeation * Command
 
 module Parser =
+    open Utils
     open AST
-    
+        
     // joiners
     let pwhen = pstring "when"
     let pthen = pstring "then"
@@ -53,7 +66,7 @@ module Parser =
         
         pipe2
             mainOp
-            (spaces1 >>. pnot |> opt)
+            (pnot |> opt)
             (fun op not -> 
             match not with 
                 | Some _ -> op true 
@@ -63,64 +76,72 @@ module Parser =
         let isIdentifierChar c = isLetter c || isDigit c || c = '_'
         many1Satisfy isIdentifierChar
 
-    let item =
-        let pcontent = isNoneOf ([''']) |> many1Satisfy
+    let content = 
         let quote = pchar '''
-        let content = between quote quote pcontent >>= (Content >> preturn)
-        let variable = identifier >>= (Variable >> preturn)
+        let isContent = isNoneOf (['''; '\n'])        
+        between quote quote (many1Satisfy isContent)
 
+    let item =
+        let content = content >>= (Content >> preturn)
+        let variable = identifier >>= (Variable >> preturn)
         variable <|> content
 
     let predicate =
-        let leftItem = item .>> spaces1  
+        let leftItem = item .>> spaces1
         let rightItem = item 
-        let equal = preturn Equal
-        let like = plike .>> spaces1 >>= (fun _ -> Like |> preturn) 
+        let equal leftItem = item >>= (apply2 Equal leftItem >> preturn)
+        let like leftItem = plike .>> spaces1 >>. item >>= (apply2 Like leftItem >> preturn)
 
-        leftItem .>>. (like <|> equal) .>>. rightItem >>= (fun ((leftItem, predicateType), rightItem) -> predicateType(leftItem, rightItem) |> preturn) 
+        leftItem >>= (fun leftItem -> like leftItem <|> equal leftItem)
 
-    let command = 
-        let send = psend >>. spaces1 >>. many1Chars anyChar >>= (Send >> preturn)
-        send
-
+    let createPredicatesChain prevPredicate links =
+        let rec inner predicateOpList prevPredicate = 
+            match predicateOpList with 
+            | [] -> prevPredicate
+            | (op, predicate)::rest -> Chain(prevPredicate, predicate, op) |> inner rest
+        inner links prevPredicate
+    
+    let command = psend >>. spaces1 >>. content >>= (Send >> preturn)
+    
     let instruction = 
-        pwhen 
-        >>. spaces1
-        >>. predicate
-        .>> newline
-        .>>. many (pand >>. spaces1 >>. predicate .>> newline)
-        .>> pthen
-        .>> spaces1
-        .>>. command
-        
+        let predicatesChain prevParser = 
+            prevParser .>>. many (operator .>> spaces1 .>>. predicate .>> newline) 
+            >>= (applyTuple2 createPredicatesChain >> preturn)
+
+        let commandsSequence = 
+            many (pthen <|> pand .>> spaces1 >>. command .>> newline)
+
+        let whenStatement = pwhen .>> spaces1 >>. predicate .>> newline |> predicatesChain
+ 
+        whenStatement .>>. commandsSequence
 
 open Parser
 
 [<EntryPoint>]
 let main argv =
     let itemParserTests = [
-        run item "'content item'";
-        run item "variableItem"
+        item, "'content item'";
+        item, "variableItem"
     ]
 
     let operatorsParserTests = [
-        run operator "or";
-        run operator "and";
-        run operator "or not";
-        run operator "and not"
+        operator, "or";
+        operator, "and";
+        operator, "or not";
+        operator, "and not"
     ]
 
     let predicateParserTests = [
-        run predicate "message 'hello'";
-        run predicate "message like 'hello'"
+        predicate, "message 'hello'";
+        predicate, "message like 'hello'"
     ]
 
     let commandParserTests = [
-        run command "send 'some message'"
+        command, "send 'some message'"
     ]
 
     let instructionParserTests = [
-        instruction, "when message like 'hello'\nand user 'user1'\nthen send 'hi'"
+        instruction, "when message like 'hello'\nand user 'user1'\nthen send 'hi'\nand send 'heloooo user1'\nthen send 'how are you?'\n"
     ]
     
     let test p str =
