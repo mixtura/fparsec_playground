@@ -17,7 +17,7 @@ module Utils =
 
 module AST =
     type Item = 
-        | Variable of string 
+        | Variable of name: string 
         | Content of string
     
     type Op = | And of invered: bool | Or of inversed: bool 
@@ -25,7 +25,7 @@ module AST =
     type Predicate = 
         | Equal of left:Item * right:Item
         | Like of left:Item * right:Item 
-        | Chain of first: Predicate * last: Predicate * op: Op
+        | Chain of left: Predicate * right: Predicate * op: Op
     
     type Repeation = 
         | Every of period: TimeSpan 
@@ -47,11 +47,11 @@ module AST =
 module Evaluation =
     open AST
 
-    let getVarContent (variables:IDictionary<string, string>) varName = variables.[varName]
+    let getVarContent (variables:IDictionary<string, string>) name = variables.[name]
 
     let evaluateItem varContentGetter = function
     | Content content -> content
-    | Variable var -> varContentGetter(var)
+    | Variable name -> varContentGetter(name)
 
     let rec evaluatePredicate itemEvaluator = function
     | Equal(left, right) -> (itemEvaluator left) = (itemEvaluator right)
@@ -70,7 +70,7 @@ module Evaluation =
     | Send(content) -> sender(content)
     | _ -> ()
 
-    let evaluateRule predicateEvaluator commandEvaluator (predicate, commands) =  
+    let evaluateRule predicateEvaluator commandEvaluator (Rule (predicate, commands)) =  
         match predicateEvaluator predicate with
         | true -> commands |> List.map commandEvaluator |> ignore; ()
         | false -> ()
@@ -98,11 +98,12 @@ module Parser =
     let psend = pstring "send"
     let plike = pstring "like"
 
+    // TODO:
     // let puntil = pstring "until"
     // let pwait = pstring "wait"
     // let prepeat = pstring "repeat"
     // let pevery = pstring "every"
-        
+
     let operator =  
         let andOp = pand >>% And;
         let orOp = por >>% Or;
@@ -147,7 +148,7 @@ module Parser =
     
     let command = psend >>. spaces1 >>. content >>= (Send >> preturn)
     
-    let instruction = 
+    let rule = 
         let predicatesChain prevParser = 
             prevParser .>>. many (operator .>> spaces1 .>>. predicate .>> newline) 
             >>= (applyTuple2 createPredicatesChain >> preturn)
@@ -157,7 +158,7 @@ module Parser =
 
         let whenStatement = pwhen .>> spaces1 >>. predicate .>> newline |> predicatesChain
  
-        whenStatement .>>. commandsSequence
+        whenStatement .>>. commandsSequence >>= (Rule >> preturn)
 
 module Program =
     open Parser
@@ -165,10 +166,8 @@ module Program =
 
     [<EntryPoint>]
     let main argv =
-        let instructionParserTests = [
-            instruction, "when message like 'hello'\nand user 'user1'\nthen send 'hi'\nand send 'heloooo user1'\nthen send 'how are you?'\n"
-        ]
-        
+        let message = "when message like 'hello'\nand user 'user1'\nthen send 'hi'\nand send 'heloooo user1'\nthen send 'how are you?'\n"
+
         let test p str =
             match run p str with
             | Success(result, _, _)   -> printfn "Success: %A" result
@@ -181,18 +180,15 @@ module Program =
             | Success(result, _, _)   -> evaluate variables result
             | Failure(errorMsg, _, _) -> printfn "Fail to parse: %s" errorMsg
 
-        let testMany = List.map(fun (p, str) -> test p str)
-        let parseAndEvaluateMany = List.map(fun (p, str) -> parseAndEvaluate p str)
-
-        printfn "********** Testing **********"
+        printfn "********** Testing *************"
         
-        testMany instructionParserTests |> ignore
+        test rule message
 
         printfn "********** Evaluation **********"
 
         variables.["message"] <- "hello"
         variables.["user"] <- "user1"
 
-        parseAndEvaluateMany instructionParserTests |> ignore
+        parseAndEvaluate rule message |> ignore
 
         0 // return an integer exit code
